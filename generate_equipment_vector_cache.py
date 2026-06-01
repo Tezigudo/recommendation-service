@@ -19,13 +19,11 @@ def generate_vector_cache():
         if not option_id:
             continue
 
-        # Safely extract attributes
-        attribute_values = option.get("attribute_values", [])
-        if isinstance(attribute_values, dict):  # fallback safety
-            attribute_values = list(attribute_values.values())
+        # Safely extract attributes (data key is 'attributes', a dict)
+        attribute_values = list(option.get("attributes", {}).values())
 
-        # Extract tag names
-        tags = [t.get("name", "") for t in option.get("tags", []) if isinstance(t, dict)]
+        # Extract tag names (tags are stored as strings after generate_equipment_option_with_tags.py)
+        tags = [t for t in option.get("tags", []) if isinstance(t, str)]
 
         fields = [
             option.get("equipment_name", ""),

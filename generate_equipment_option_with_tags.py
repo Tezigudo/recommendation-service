@@ -53,10 +53,6 @@ TAG_KEYWORDS = {
     "tower": ["tower"],
     "barbell-compatible": ["barbell"],
     "gym-grade": ["commercial", "gym-grade"],
-    "joint-friendly": ["joint", "rehab", "recovery"],
-"post-injury": ["post-injury", "rehab"],
-"low-impact": ["low-impact", "joint-friendly", "gentle"],
-"elderly": ["elderly", "senior"],
 }
 
 def extract_tags(option):
