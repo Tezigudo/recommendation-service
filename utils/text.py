@@ -14,4 +14,4 @@ def build_user_text(req):
     return " ".join([p for p in parts if p])
 
 def clean_text(text):
-    return re.sub(r"[^a-zA-Z0-9\\s]", "", text).lower().strip()
+    return re.sub(r"[^a-zA-Z0-9\s]", "", text).lower().strip()

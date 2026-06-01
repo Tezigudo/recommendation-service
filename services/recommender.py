@@ -7,38 +7,54 @@ from utils.text import build_user_text, clean_text
 from models.schema import RecommendRequest
 import faiss
 from utils.equipment import prepare_options_dataframe
+import logging
 
+logger = logging.getLogger(__name__)
 
-# Load model only once
-MODEL = SentenceTransformer("all-MiniLM-L6-v2")
+# Load model and data at module init; wrap in try/except so startup errors are clear.
+try:
+    MODEL = SentenceTransformer("all-MiniLM-L6-v2")
+except Exception as e:
+    logger.error(f"Failed to load SentenceTransformer model: {e}")
+    raise
 
-# Load & preprocess vector cache
-with open("data/vector_cache.json", "rb") as f:
-    vector_data = json.loads(f.read())
+try:
+    # Load & preprocess vector cache
+    with open("data/vector_cache.json", "rb") as f:
+        vector_data = json.loads(f.read())
 
+    VECTORS = np.array(list(vector_data.values()), dtype='float32')
+    IDS = list(vector_data.keys())
+    ID_TO_INDEX = {k: i for i, k in enumerate(IDS)}
 
-VECTORS = np.array(list(vector_data.values()), dtype='float32')
-IDS = list(vector_data.keys())
-ID_TO_INDEX = {k: i for i, k in enumerate(IDS)}
+    if len(VECTORS) == 0:
+        raise ValueError("vector_cache.json is empty — regenerate with generate_equipment_vector_cache.py")
 
-# Build FAISS index once
-DIM = VECTORS.shape[1]
-index = faiss.IndexFlatIP(DIM)  # Inner Product = cosine if vectors normalized
-faiss.normalize_L2(VECTORS)
-index.add(VECTORS)
+    # Build FAISS index once
+    DIM = VECTORS.shape[1]
+    index = faiss.IndexFlatIP(DIM)  # Inner Product = cosine if vectors normalized
+    faiss.normalize_L2(VECTORS)
+    index.add(VECTORS)
+except Exception as e:
+    logger.error(f"Failed to load vector cache or build FAISS index: {e}")
+    raise
 
-# Load equipment data
-with open("data/equipment_options_with_tags.json", "rb") as f:
-    EQUIPMENT_DATA = json.loads(f.read())
+try:
+    # Load equipment data
+    with open("data/equipment_options_with_tags.json", "rb") as f:
+        EQUIPMENT_DATA = json.loads(f.read())
 
-# Create a fast lookup dict for option_id
-OPTION_BY_ID = {str(opt["option_id"]): opt for opt in EQUIPMENT_DATA if "option_id" in opt}
+    # Create a fast lookup dict for option_id
+    OPTION_BY_ID = {str(opt["option_id"]): opt for opt in EQUIPMENT_DATA if "option_id" in opt}
+except Exception as e:
+    logger.error(f"Failed to load equipment data: {e}")
+    raise
 
 # Utility to extract a flattened version of tag/attribute data for scoring
 def build_equipment_text(option):
-    tags = [t.get("name", "") for t in option.get("tags", [])]
-    attrs = option.get("attribute_values", [])
-    return clean_text(" ".join(tags + attrs))
+    tags = [t for t in option.get("tags", []) if isinstance(t, str)]
+    attrs = list(option.get("attributes", {}).values())
+    return clean_text(" ".join(tags + [str(a) for a in attrs]))
 
 def vectorized_rule_scoring(df: pd.DataFrame, req: RecommendRequest):
     score = np.zeros(len(df))
@@ -46,9 +62,6 @@ def vectorized_rule_scoring(df: pd.DataFrame, req: RecommendRequest):
 
 
     # Preprocess request
-
-    pref_tags = {p.tag.lower() for p in req.preferences or [] if p.tag}
-
     goal = (req.goal or "").lower()
     experience = (req.experience or "").lower()
     gender = (req.gender or "").lower()
@@ -58,20 +71,8 @@ def vectorized_rule_scoring(df: pd.DataFrame, req: RecommendRequest):
     def tag_match(tag_set, tag): return tag in tag_set if tag else False
     def attr_match(attr_set, attr): return attr in attr_set if attr else False
 
-    for i, row in df.iterrows():
+    for pos, (i, row) in enumerate(df.iterrows()):
         s, reason = 0, []
-        
-        tag_intersection = pref_tags & row.tags
-        s += len(tag_intersection) * 6
-        reason.append(f"Matched tags: {', '.join(tag_intersection)} (+{len(tag_intersection)*6})")
-
-        
-        text = row.text
-        for tag in pref_tags:
-            if tag in text:
-                s += 3
-                reason.append(f"Tag '{tag}' found in text (+3)")
-
 
         # Tag/Pref score
         for pref in req.preferences or []:
@@ -205,22 +206,25 @@ def vectorized_rule_scoring(df: pd.DataFrame, req: RecommendRequest):
         elif user_type == "elderly":
             s += 5
             reason.append("User type: elderly (+5)")
-        score[i] = s
-        explanations[i] = "; ".join(reason) if reason else "No scoring rules matched"
+        score[pos] = s
+        explanations[pos] = "; ".join(reason) if reason else "No scoring rules matched"
 
     return score, explanations
 
 def get_recommendations(req: RecommendRequest):
-    user_text = build_user_text(req)
+    user_text = clean_text(build_user_text(req))
     user_vector = MODEL.encode(user_text, convert_to_tensor=False).reshape(1, -1).astype('float32')
     faiss.normalize_L2(user_vector)
 
-    D, I = index.search(user_vector, k=1000)  # Top K most similar vectors
+    k = min(1000, index.ntotal)
+    D, I = index.search(user_vector, k=k)  # Top K most similar vectors
 
     # Filter matched options
     matched_options = []
     similarities = []
     for i, sim in zip(I[0], D[0]):
+        if i < 0:  # FAISS sentinel for unfilled slots
+            continue
         option_id = IDS[i]
         opt = OPTION_BY_ID.get(option_id)
         if not opt:
@@ -243,22 +247,23 @@ def get_recommendations(req: RecommendRequest):
     df["rule_explanation"] = explanations
 
 
-    # Inject scores and optional debug into the original option dict
-    for idx, row in df.iterrows():
-        opt = df.at[idx, "data"]
-        opt["score"] = float(row["score"])
-        opt["rule_applied"] = row["rule_explanation"]
+    # Build result dicts as copies — never mutate the shared OPTION_BY_ID/EQUIPMENT_DATA dicts
+    results = []
+    for pos, (idx, row) in enumerate(df.iterrows()):
+        original_opt = df.at[idx, "data"]
+        result_opt = {**original_opt, "score": float(row["score"]), "rule_applied": row["rule_explanation"]}
 
         if config.DEBUG:
-            opt["__debug"] = {
+            result_opt["__debug"] = {
                 "embedding_similarity": round(row["embedding_similarity"], 2),
                 "rule_score": round(row["rule_score"], 2),
                 "user_text": user_text
             }
+        results.append(result_opt)
 
     # Deduplicate by equipment_id
     seen = {}
-    for opt in sorted(df["data"], key=lambda o: o["score"], reverse=True):
+    for opt in sorted(results, key=lambda o: o["score"], reverse=True):
         eq_id = opt.get("equipment_id")
         if eq_id not in seen:
             seen[eq_id] = opt

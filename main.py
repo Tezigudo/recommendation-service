@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from api.route import router
-from config import ALLOWED_ORIGINS, DEBUG
+from config import ALLOWED_ORIGINS, CORS_ALLOW_CREDENTIALS, DEBUG
 
 
 app = FastAPI(debug=DEBUG)
@@ -10,7 +10,7 @@ app = FastAPI(debug=DEBUG)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
+    allow_credentials=CORS_ALLOW_CREDENTIALS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
