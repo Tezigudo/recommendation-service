@@ -50,12 +50,6 @@ except Exception as e:
     logger.error(f"Failed to load equipment data: {e}")
     raise
 
-# Utility to extract a flattened version of tag/attribute data for scoring
-def build_equipment_text(option):
-    tags = [t for t in option.get("tags", []) if isinstance(t, str)]
-    attrs = list(option.get("attributes", {}).values())
-    return clean_text(" ".join(tags + [str(a) for a in attrs]))
-
 def vectorized_rule_scoring(df: pd.DataFrame, req: RecommendRequest):
     score = np.zeros(len(df))
     explanations = [""] * len(df)  # Track rule explanations
@@ -249,7 +243,7 @@ def get_recommendations(req: RecommendRequest):
 
     # Build result dicts as copies — never mutate the shared OPTION_BY_ID/EQUIPMENT_DATA dicts
     results = []
-    for pos, (idx, row) in enumerate(df.iterrows()):
+    for idx, row in df.iterrows():
         original_opt = df.at[idx, "data"]
         result_opt = {**original_opt, "score": float(row["score"]), "rule_applied": row["rule_explanation"]}
 

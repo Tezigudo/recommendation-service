@@ -1,5 +1,4 @@
 from pydantic import BaseModel, Field
-from pydantic import conlist
 from typing import List, Optional
 
 class Preference(BaseModel):
@@ -16,4 +15,4 @@ class RecommendRequest(BaseModel):
     height: Optional[float] = Field(default=None, ge=0, le=300)
     goal: Optional[str] = None
     experience: Optional[str] = None
-    preferences: Optional[conlist(Preference, max_length=50)] = []
+    preferences: Optional[List[Preference]] = Field(default_factory=list, max_length=50)
